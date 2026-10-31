@@ -17,6 +17,17 @@ jobs:
         with:
           dotnet-version: '9.0.x'
 
+      - name: Fix Harmony (add MonoMod.Core for Release config)
+        shell: bash
+        run: |
+          cat > src/Harmony/Directory.Build.targets <<'EOF'
+          <Project>
+            <ItemGroup Condition="'$(MSBuildProjectName)'=='Harmony' And !$(Configuration.EndsWith('Thin')) And !$(Configuration.EndsWith('Fat')) And '$(Configuration)'!='ReleaseRef'">
+              <PackageReference Include="MonoMod.Core" Version="$(MonoModCoreVersion)" />
+            </ItemGroup>
+          </Project>
+          EOF
+
       - name: Publish (win-x64, self-contained)
         working-directory: src/MadnessInteractiveReloaded
         shell: pwsh
@@ -50,6 +61,16 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '9.0.x'
+
+      - name: Fix Harmony (add MonoMod.Core for Release config)
+        run: |
+          cat > src/Harmony/Directory.Build.targets <<'EOF'
+          <Project>
+            <ItemGroup Condition="'$(MSBuildProjectName)'=='Harmony' And !$(Configuration.EndsWith('Thin')) And !$(Configuration.EndsWith('Fat')) And '$(Configuration)'!='ReleaseRef'">
+              <PackageReference Include="MonoMod.Core" Version="$(MonoModCoreVersion)" />
+            </ItemGroup>
+          </Project>
+          EOF
 
       - name: Make post-publish pack step use ./MIR on Linux
         run: sed -i 's|Command="MIR --mode|Command="./MIR --mode|g' src/MadnessInteractiveReloaded/MIR.csproj
