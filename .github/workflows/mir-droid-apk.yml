@@ -474,7 +474,7 @@ jobs:
           Console.WriteLine("Etapa 1 terminada: si ves esto, .NET funciona dentro de tu APK.");
           EOF
 
-      - name: Publicar .NET       - name: Publicar .NET para Android (linux-bionic-arm64)
+      - name: Publicar .NET- name: Publicar .NET para Android (linux-bionic-arm64)
         run: |
           cd apk
           dotnet publish HelloApp/HelloApp.csproj -c Release -o publish
