@@ -68,6 +68,7 @@ jobs:
               defaultConfig {
                   applicationId 'com.mirdroid.launcher'
                   minSdk 26
+                  // targetSdk 28 a proposito: permite leer carpetas normales y cargar librerias extraidas (como hacen los launchers de Minecraft)
                   targetSdk 28
                   versionCode 1
                   versionName '0.1'
@@ -141,6 +142,7 @@ jobs:
               const char* home = (*env)->GetStringUTFChars(env, jhome, NULL);
               const char* tmp  = (*env)->GetStringUTFChars(env, jtmp, NULL);
 
+              /* Todo lo que .NET escriba en consola va a un archivo que la app muestra en pantalla */
               int fd = open(logp, O_WRONLY | O_CREAT | O_APPEND, 0644);
               if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); }
               setvbuf(stdout, NULL, _IONBF, 0);
@@ -149,8 +151,8 @@ jobs:
               setenv("HOME", home, 1);
               setenv("TMPDIR", tmp, 1);
               setenv("DOTNET_ROOT", root, 1);
-              setenv("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1", 1);
-              setenv("DOTNET_EnableWriteXorExecute", "0", 1);
+              setenv("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1", 1); /* Android no trae ICU */
+              setenv("DOTNET_EnableWriteXorExecute", "0", 1);          /* evita problemas con W^X en Android */
               setenv("DOTNET_TieredPGO", "0", 1);
 
               char path[4096];
@@ -472,12 +474,4 @@ jobs:
           Console.WriteLine("Etapa 1 terminada: si ves esto, .NET funciona dentro de tu APK.");
           EOF
 
-      - name: Publicar .NET para Android (linux-bionic-arm64)
-        run: |
-          cd apk
-          dotnet publish HelloApp/HelloApp.csproj -c Release -o publish
-          ls publish | head -60
-          test -f publish/libhostfxr.so
-          test -f publish/libcoreclr.so
-          test -f publish/HelloApp.dll
-          (cd publish && zip -r -q ..
+      - name: Publicar .NET
