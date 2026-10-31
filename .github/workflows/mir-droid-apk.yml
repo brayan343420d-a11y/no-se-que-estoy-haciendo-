@@ -474,4 +474,29 @@ jobs:
           Console.WriteLine("Etapa 1 terminada: si ves esto, .NET funciona dentro de tu APK.");
           EOF
 
-      - name: Publicar .NET 
+      - name: Publicar .NET       - name: Publicar .NET para Android (linux-bionic-arm64)
+        run: |
+          cd apk
+          dotnet publish HelloApp/HelloApp.csproj -c Release -o publish
+          ls publish | grep -E '^lib|^HelloApp' || true
+          test -f publish/libhostfxr.so
+          test -f publish/libcoreclr.so
+          test -f publish/HelloApp.dll
+          cd publish
+          zip -r -q ../app/src/main/assets/dotnet.zip .
+          cd ..
+          ls -la app/src/main/assets
+
+      - name: Compilar APK
+        run: |
+          cd apk
+          NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
+          NDK_VER=$(grep Pkg.Revision "$NDK_HOME/source.properties" | cut -d= -f2 | tr -d ' ')
+          echo "NDK $NDK_VER"
+          sed -i "s/NDK_VER_PLACEHOLDER/$NDK_VER/" app/build.gradle
+          gradle assembleDebug --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MIRDroid-etapa1-apk
+          path: apk/app/build/outputs/apk/debug/app-debug.apk
