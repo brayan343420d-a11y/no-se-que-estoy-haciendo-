@@ -1,0 +1,483 @@
+name: MIR Droid - APK etapa 1 (prueba de .NET + selector de carpeta)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.10.2
+
+      - name: Generar proyecto Android
+        run: |
+          mkdir -p apk/HelloApp apk/app/src/main/java/com/mirdroid apk/app/src/main/cpp apk/app/src/main/assets
+          cd apk
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = 'MIRDroid'
+          include ':app'
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.7.3' apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3g
+          android.useAndroidX=false
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.mirdroid'
+              compileSdk 34
+              ndkVersion 'NDK_VER_PLACEHOLDER'
+
+              defaultConfig {
+                  applicationId 'com.mirdroid.launcher'
+                  minSdk 26
+                  targetSdk 28
+                  versionCode 1
+                  versionName '0.1'
+                  ndk {
+                      abiFilters 'arm64-v8a'
+                  }
+              }
+
+              externalNativeBuild {
+                  cmake {
+                      path 'src/main/cpp/CMakeLists.txt'
+                  }
+              }
+
+              packaging {
+                  jniLibs {
+                      useLegacyPackaging = true
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+              <application
+                  android:label="MIR Droid"
+                  android:allowBackup="false"
+                  android:requestLegacyExternalStorage="true"
+                  android:largeHeap="true">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/cpp/CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.18)
+          project(mirhost C)
+          add_library(mirhost SHARED host.c)
+          find_library(log-lib log)
+          target_link_libraries(mirhost ${log-lib} dl)
+          EOF
+
+          cat > app/src/main/cpp/host.c <<'EOF'
+          #include <jni.h>
+          #include <dlfcn.h>
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <unistd.h>
+          #include <fcntl.h>
+
+          typedef int (*startupinfo_fn)(int, const char**, const char*, const char*, const char*);
+
+          JNIEXPORT jint JNICALL
+          Java_com_mirdroid_Native_runDotnet(JNIEnv* env, jclass cls, jstring jroot, jstring japp,
+                                             jstring jlog, jstring jhome, jstring jtmp, jobjectArray jargs) {
+              const char* root = (*env)->GetStringUTFChars(env, jroot, NULL);
+              const char* app  = (*env)->GetStringUTFChars(env, japp, NULL);
+              const char* logp = (*env)->GetStringUTFChars(env, jlog, NULL);
+              const char* home = (*env)->GetStringUTFChars(env, jhome, NULL);
+              const char* tmp  = (*env)->GetStringUTFChars(env, jtmp, NULL);
+
+              int fd = open(logp, O_WRONLY | O_CREAT | O_APPEND, 0644);
+              if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); }
+              setvbuf(stdout, NULL, _IONBF, 0);
+              setvbuf(stderr, NULL, _IONBF, 0);
+
+              setenv("HOME", home, 1);
+              setenv("TMPDIR", tmp, 1);
+              setenv("DOTNET_ROOT", root, 1);
+              setenv("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1", 1);
+              setenv("DOTNET_EnableWriteXorExecute", "0", 1);
+              setenv("DOTNET_TieredPGO", "0", 1);
+
+              char path[4096];
+              snprintf(path, sizeof(path), "%s/libhostfxr.so", root);
+              void* h = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+              if (!h) { fprintf(stderr, "[host] dlopen(libhostfxr.so) fallo: %s\n", dlerror()); return -1; }
+
+              startupinfo_fn fn = (startupinfo_fn)dlsym(h, "hostfxr_main_startupinfo");
+              if (!fn) { fprintf(stderr, "[host] no encontre hostfxr_main_startupinfo: %s\n", dlerror()); return -2; }
+
+              int n = jargs ? (*env)->GetArrayLength(env, jargs) : 0;
+              const char** argv = (const char**)calloc((size_t)n + 2, sizeof(char*));
+              char hostpath[4096];
+              snprintf(hostpath, sizeof(hostpath), "%s/HelloApp", root);
+              argv[0] = hostpath;
+              for (int i = 0; i < n; i++) {
+                  jstring s = (jstring)(*env)->GetObjectArrayElement(env, jargs, i);
+                  argv[i + 1] = (*env)->GetStringUTFChars(env, s, NULL);
+              }
+
+              fprintf(stdout, "[host] iniciando .NET...\n");
+              int rc = fn(n + 1, argv, hostpath, root, app);
+              fprintf(stdout, "[host] .NET termino con codigo %d\n", rc);
+              return rc;
+          }
+          EOF
+
+          cat > app/src/main/java/com/mirdroid/Native.java <<'EOF'
+          package com.mirdroid;
+
+          public class Native {
+              static {
+                  System.loadLibrary("mirhost");
+              }
+
+              public static native int runDotnet(String root, String app, String log, String home, String tmp, String[] args);
+          }
+          EOF
+
+          cat > app/src/main/java/com/mirdroid/MainActivity.java <<'EOF'
+          package com.mirdroid;
+
+          import android.Manifest;
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.content.pm.PackageManager;
+          import android.graphics.Typeface;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.os.Environment;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.provider.DocumentsContract;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import java.io.BufferedInputStream;
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.RandomAccessFile;
+          import java.util.zip.ZipEntry;
+          import java.util.zip.ZipInputStream;
+
+          public class MainActivity extends Activity {
+              static final int REQ_TREE = 1;
+              static final int REQ_PERM = 2;
+              static final String RUNTIME_VERSION = "1";
+
+              final Handler ui = new Handler(Looper.getMainLooper());
+              TextView status;
+              TextView logView;
+              ScrollView scroll;
+              Button pick;
+              Button run;
+              String gamePath;
+              File dotnetDir;
+              volatile boolean ready = false;
+              boolean started = false;
+
+              @Override
+              protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setPadding(32, 48, 32, 32);
+
+                  status = new TextView(this);
+                  status.setTextSize(16);
+                  pick = new Button(this);
+                  pick.setText("1. Elegir carpeta del juego");
+                  run = new Button(this);
+                  run.setText("2. Probar .NET en Android");
+                  run.setEnabled(false);
+                  logView = new TextView(this);
+                  logView.setTypeface(Typeface.MONOSPACE);
+                  logView.setTextSize(12);
+                  logView.setTextIsSelectable(true);
+                  scroll = new ScrollView(this);
+                  scroll.addView(logView);
+
+                  root.addView(status);
+                  root.addView(pick);
+                  root.addView(run);
+                  root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+                  setContentView(root);
+
+                  gamePath = getSharedPreferences("mir", MODE_PRIVATE).getString("game", null);
+
+                  pick.setOnClickListener(v -> {
+                      Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                      startActivityForResult(i, REQ_TREE);
+                  });
+                  run.setOnClickListener(v -> runDotnet());
+
+                  if (Build.VERSION.SDK_INT >= 23
+                          && checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                      requestPermissions(new String[]{
+                              Manifest.permission.READ_EXTERNAL_STORAGE,
+                              Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQ_PERM);
+                  }
+
+                  refresh();
+                  extractRuntime();
+              }
+
+              void say(final String s) {
+                  ui.post(() -> logView.append("[app] " + s + "\n"));
+              }
+
+              void refresh() {
+                  ui.post(() -> {
+                      status.setText("Carpeta del juego: " + (gamePath == null ? "(sin elegir)" : gamePath)
+                              + "\nRuntime .NET: " + (ready ? "listo" : "preparando..."));
+                      run.setEnabled(ready && !started);
+                  });
+              }
+
+              static String treeToPath(Uri uri) {
+                  String id = DocumentsContract.getTreeDocumentId(uri);
+                  String[] p = id.split(":", 2);
+                  String vol = p[0];
+                  String rel = p.length > 1 ? p[1] : "";
+                  String base = vol.equals("primary")
+                          ? Environment.getExternalStorageDirectory().getAbsolutePath()
+                          : "/storage/" + vol;
+                  return rel.isEmpty() ? base : base + "/" + rel;
+              }
+
+              @Override
+              protected void onActivityResult(int req, int res, Intent data) {
+                  super.onActivityResult(req, res, data);
+                  if (req == REQ_TREE && res == RESULT_OK && data != null && data.getData() != null) {
+                      try {
+                          gamePath = treeToPath(data.getData());
+                          getSharedPreferences("mir", MODE_PRIVATE).edit().putString("game", gamePath).apply();
+                      } catch (Exception e) {
+                          say("No pude leer la carpeta: " + e);
+                      }
+                      refresh();
+                  }
+              }
+
+              static void deleteRec(File f) {
+                  File[] kids = f.listFiles();
+                  if (kids != null) {
+                      for (File k : kids) deleteRec(k);
+                  }
+                  f.delete();
+              }
+
+              void extractRuntime() {
+                  new Thread(() -> {
+                      try {
+                          dotnetDir = new File(getFilesDir(), "dotnet");
+                          File ok = new File(dotnetDir, ".ok-" + RUNTIME_VERSION);
+                          if (!ok.exists()) {
+                              say("Extrayendo runtime .NET (solo la primera vez, puede tardar)...");
+                              deleteRec(dotnetDir);
+                              dotnetDir.mkdirs();
+                              String canonRoot = dotnetDir.getCanonicalPath();
+                              try (ZipInputStream z = new ZipInputStream(new BufferedInputStream(getAssets().open("dotnet.zip")))) {
+                                  ZipEntry e;
+                                  byte[] buf = new byte[1 << 16];
+                                  while ((e = z.getNextEntry()) != null) {
+                                      File f = new File(dotnetDir, e.getName());
+                                      if (!f.getCanonicalPath().startsWith(canonRoot)) continue;
+                                      if (e.isDirectory()) {
+                                          f.mkdirs();
+                                          continue;
+                                      }
+                                      f.getParentFile().mkdirs();
+                                      try (FileOutputStream o = new FileOutputStream(f)) {
+                                          int r;
+                                          while ((r = z.read(buf)) > 0) o.write(buf, 0, r);
+                                      }
+                                      f.setReadable(true, false);
+                                      f.setExecutable(true, false);
+                                  }
+                              }
+                              ok.createNewFile();
+                          }
+                          ready = true;
+                          say("Runtime listo.");
+                      } catch (Throwable t) {
+                          say("Error extrayendo runtime: " + t);
+                      }
+                      refresh();
+                  }).start();
+              }
+
+              void runDotnet() {
+                  started = true;
+                  refresh();
+                  final File logFile = new File(getFilesDir(), "dotnet.log");
+                  logFile.delete();
+
+                  Thread tail = new Thread(() -> {
+                      long pos = 0;
+                      while (true) {
+                          try {
+                              Thread.sleep(300);
+                          } catch (Exception ignore) {
+                          }
+                          try (RandomAccessFile r = new RandomAccessFile(logFile, "r")) {
+                              if (r.length() > pos) {
+                                  r.seek(pos);
+                                  byte[] bytes = new byte[(int) (r.length() - pos)];
+                                  r.readFully(bytes);
+                                  pos = r.length();
+                                  final String s = new String(bytes, "UTF-8");
+                                  ui.post(() -> {
+                                      logView.append(s);
+                                      scroll.fullScroll(View.FOCUS_DOWN);
+                                  });
+                              }
+                          } catch (Exception ignore) {
+                          }
+                      }
+                  });
+                  tail.setDaemon(true);
+                  tail.start();
+
+                  new Thread(() -> {
+                      try {
+                          String root = dotnetDir.getAbsolutePath();
+                          int rc = Native.runDotnet(root, root + "/HelloApp.dll", logFile.getAbsolutePath(),
+                                  getFilesDir().getAbsolutePath(), getCacheDir().getAbsolutePath(),
+                                  new String[]{gamePath == null ? "" : gamePath});
+                          say("Termino con codigo " + rc + ". Cierra y abre la app para volver a probar.");
+                      } catch (Throwable t) {
+                          say("Error nativo: " + t);
+                      }
+                  }).start();
+              }
+          }
+          EOF
+
+          cat > HelloApp/HelloApp.csproj <<'EOF'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <OutputType>Exe</OutputType>
+              <TargetFramework>net9.0</TargetFramework>
+              <AssemblyName>HelloApp</AssemblyName>
+              <RuntimeIdentifier>linux-bionic-arm64</RuntimeIdentifier>
+              <SelfContained>true</SelfContained>
+              <InvariantGlobalization>true</InvariantGlobalization>
+              <ImplicitUsings>enable</ImplicitUsings>
+              <Nullable>enable</Nullable>
+            </PropertyGroup>
+          </Project>
+          EOF
+
+          cat > HelloApp/Program.cs <<'EOF'
+          using System.Runtime.InteropServices;
+
+          Console.WriteLine("=== .NET dentro de Android ===");
+          Console.WriteLine($"Runtime: {RuntimeInformation.FrameworkDescription}");
+          Console.WriteLine($"Sistema: {RuntimeInformation.OSDescription} / {RuntimeInformation.OSArchitecture}");
+          Console.WriteLine($"Nucleos: {Environment.ProcessorCount}");
+          Console.WriteLine();
+          Console.WriteLine("Librerias nativas de Android que el juego necesitara:");
+          foreach (var lib in new[] { "libEGL.so", "libGLESv3.so", "libOpenSLES.so", "libandroid.so" })
+          {
+              bool ok = NativeLibrary.TryLoad(lib, out var h);
+              Console.WriteLine($"  {lib}: {(ok ? "OK" : "NO se pudo cargar")}");
+              if (ok) NativeLibrary.Free(h);
+          }
+
+          var game = args.Length > 0 ? args[0] : "";
+          Console.WriteLine();
+          Console.WriteLine($"Carpeta elegida: {(game.Length == 0 ? "(ninguna)" : game)}");
+          if (game.Length > 0)
+          {
+              if (!Directory.Exists(game))
+              {
+                  Console.WriteLine("  ! La carpeta no existe o no hay permiso de lectura.");
+              }
+              else
+              {
+                  try
+                  {
+                      var entries = Directory.GetFileSystemEntries(game);
+                      Console.WriteLine($"  Elementos dentro: {entries.Length}");
+                      foreach (var e in entries.Take(15)) Console.WriteLine("   - " + Path.GetFileName(e));
+                      Console.WriteLine($"  MIR.dll: {File.Exists(Path.Combine(game, "MIR.dll"))}");
+                      Console.WriteLine($"  resources/base.waa: {File.Exists(Path.Combine(game, "resources", "base.waa"))}");
+                  }
+                  catch (Exception ex)
+                  {
+                      Console.WriteLine("  ! " + ex.Message);
+                  }
+              }
+          }
+          Console.WriteLine();
+          Console.WriteLine("Etapa 1 terminada: si ves esto, .NET funciona dentro de tu APK.");
+          EOF
+
+      - name: Publicar .NET para Android (linux-bionic-arm64)
+        run: |
+          cd apk
+          dotnet publish HelloApp/HelloApp.csproj -c Release -o publish
+          ls publish | head -60
+          test -f publish/libhostfxr.so
+          test -f publish/libcoreclr.so
+          test -f publish/HelloApp.dll
+          (cd publish && zip -r -q ..
